@@ -501,7 +501,7 @@ namespace Downloader
             var formatSelector = string.IsNullOrWhiteSpace(videoFormatId)
                 ? "bv*+ba/b"
                 : string.IsNullOrWhiteSpace(audioFormatId)
-                ? videoFormatId
+                ? $"{videoFormatId}+ba/b"
                 : $"{videoFormatId}+{audioFormatId}";
 
             return new YtDlpDownloadOptions

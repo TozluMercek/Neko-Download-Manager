@@ -114,6 +114,18 @@ public sealed class YtDlpService
             arguments.Add(options.FormatSelector);
         }
 
+        var ffmpegPath = GetFfmpegPath();
+        if (options.FormatSelector.Contains('+') && ffmpegPath is null)
+        {
+            throw new FfmpegNotFoundException();
+        }
+
+        if (ffmpegPath is not null)
+        {
+            arguments.Add("--ffmpeg-location");
+            arguments.Add(ffmpegPath);
+        }
+
         AddCookieArgument(arguments, options.CookiesFromBrowser);
 
         if (options.SubtitleMode != SubtitleDownloadMode.None)
@@ -132,14 +144,10 @@ public sealed class YtDlpService
             if (options.SubtitleMode is SubtitleDownloadMode.Embed or SubtitleDownloadMode.ExternalAndEmbed)
             {
                 arguments.Add("--embed-subs");
-                var ffmpegPath = GetFfmpegPath();
                 if (ffmpegPath is null)
                 {
                     throw new FfmpegNotFoundException();
                 }
-
-                arguments.Add("--ffmpeg-location");
-                arguments.Add(ffmpegPath);
             }
 
             if (options.SubtitleMode == SubtitleDownloadMode.ExternalAndEmbed)
