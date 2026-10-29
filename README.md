@@ -60,6 +60,3 @@ Ayrı video ve ses akışlarını birleştirmek için FFmpeg gereklidir. FFmpeg'
 
 Uygulama ayarları ve indirme geçmişi Windows kullanıcı profilindeki `%LOCALAPPDATA%\Downloader` klasöründe saklanır. yt-dlp yürütülebilir dosyası da bu klasöre indirilir.
 
-## Not
-
-İndirme yapmadan önce ilgili içeriği indirme ve kullanma hakkınız olduğundan ve kaynak hizmetin kullanım koşullarına uyduğunuzdan emin olun.
