@@ -45,4 +45,5 @@ public sealed record YtDlpDownloadOptions
     public string SubtitleLanguages { get; init; } = "all";
     public bool IncludeAutomaticSubtitles { get; init; }
     public CookieBrowser? CookiesFromBrowser { get; init; }
+    public bool AutoCookieFallback { get; init; } = true;
 }

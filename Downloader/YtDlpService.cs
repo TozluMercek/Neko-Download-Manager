@@ -20,6 +20,7 @@ public sealed class YtDlpService
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Downloader",
         "ffmpeg-path.txt");
+    private CookieBrowser? _lastWorkingCookieBrowser;
 
     public async Task<string> UpdateAsync(CancellationToken cancellationToken = default)
     {
@@ -39,6 +40,7 @@ public sealed class YtDlpService
     public async Task<YtDlpFormatList> GetFormatsAsync(
         string url,
         CookieBrowser? cookiesFromBrowser = null,
+        bool autoCookieFallback = true,
         CancellationToken cancellationToken = default)
     {
         await EnsureInstalledAsync(cancellationToken);
@@ -47,10 +49,8 @@ public sealed class YtDlpService
         {
             "--no-warnings", "--no-playlist", "--dump-single-json", "--skip-download"
         };
-        AddCookieArgument(arguments, cookiesFromBrowser);
-        arguments.Add(url);
 
-        var result = await RunAsync(arguments, cancellationToken);
+        var result = await RunWithCookiesAsync(arguments, url, cookiesFromBrowser, autoCookieFallback, cancellationToken);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(GetFailureMessage(result));
@@ -126,8 +126,6 @@ public sealed class YtDlpService
             arguments.Add(ffmpegPath);
         }
 
-        AddCookieArgument(arguments, options.CookiesFromBrowser);
-
         if (options.SubtitleMode != SubtitleDownloadMode.None)
         {
             arguments.Add("--write-subs");
@@ -156,8 +154,13 @@ public sealed class YtDlpService
             }
         }
 
-        arguments.Add(url);
-        var result = await RunAsync(arguments, cancellationToken, progress);
+        var result = await RunWithCookiesAsync(
+            arguments,
+            url,
+            options.CookiesFromBrowser,
+            options.AutoCookieFallback,
+            cancellationToken,
+            progress);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(GetFailureMessage(result));
@@ -167,6 +170,7 @@ public sealed class YtDlpService
     public async Task<MediaMetadata> GetMediaMetadataAsync(
         string url,
         CookieBrowser? cookiesFromBrowser = null,
+        bool autoCookieFallback = true,
         CancellationToken cancellationToken = default)
     {
         await EnsureInstalledAsync(cancellationToken);
@@ -178,10 +182,8 @@ public sealed class YtDlpService
             "--skip-download",
             "--dump-single-json"
         };
-        AddCookieArgument(arguments, cookiesFromBrowser);
-        arguments.Add(url);
 
-        var result = await RunAsync(arguments, cancellationToken);
+        var result = await RunWithCookiesAsync(arguments, url, cookiesFromBrowser, autoCookieFallback, cancellationToken);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(GetFailureMessage(result));
@@ -481,13 +483,92 @@ public sealed class YtDlpService
         return null;
     }
 
-    private static void AddCookieArgument(ICollection<string> arguments, CookieBrowser? browser)
+    // Giriş gerektiren içeriklerde (ör. Reddit NSFW, yaş kısıtlı videolar) çerez seçilmemişse
+    // yüklü tarayıcıların çerezleri sırayla denenir; çalışan tarayıcı sonraki istekler için hatırlanır.
+    private async Task<ProcessResult> RunWithCookiesAsync(
+        IReadOnlyList<string> arguments,
+        string url,
+        CookieBrowser? browser,
+        bool autoCookieFallback,
+        CancellationToken cancellationToken,
+        IProgress<YtDlpProgress>? progress = null)
     {
+        var result = await RunAsync(BuildArguments(arguments, url, browser), cancellationToken, progress);
+        if (result.ExitCode == 0 || !RequiresAuthentication(result.Output))
+        {
+            return result;
+        }
+
+        if (browser.HasValue || !autoCookieFallback)
+        {
+            return result with { Output = CreateAuthenticationMessage(browser) };
+        }
+
+        var candidates = new List<CookieBrowser> { CookieBrowser.Firefox, CookieBrowser.Edge, CookieBrowser.Chrome };
+        if (_lastWorkingCookieBrowser is { } lastWorking)
+        {
+            candidates.Remove(lastWorking);
+            candidates.Insert(0, lastWorking);
+        }
+
+        foreach (var candidate in candidates)
+        {
+            progress?.Report(new YtDlpProgress(null, $"Giriş gerekiyor, {candidate} çerezleri deneniyor..."));
+            var retry = await RunAsync(BuildArguments(arguments, url, candidate), cancellationToken, progress);
+            if (retry.ExitCode == 0)
+            {
+                _lastWorkingCookieBrowser = candidate;
+                return retry;
+            }
+
+            if (!RequiresAuthentication(retry.Output) && !IsCookieReadFailure(retry.Output))
+            {
+                // Çerezler okundu ve kimlik sorunu aşıldı, ancak başka bir hata oluştu.
+                return retry;
+            }
+        }
+
+        return result with { Output = CreateAuthenticationMessage(null) };
+    }
+
+    private static List<string> BuildArguments(IReadOnlyList<string> arguments, string url, CookieBrowser? browser)
+    {
+        var allArguments = new List<string>(arguments);
         if (browser.HasValue)
         {
-            arguments.Add("--cookies-from-browser");
-            arguments.Add(browser.Value.ToString().ToLowerInvariant());
+            allArguments.Add("--cookies-from-browser");
+            allArguments.Add(browser.Value.ToString().ToLowerInvariant());
         }
+
+        allArguments.Add(url);
+        return allArguments;
+    }
+
+    private static bool RequiresAuthentication(string output)
+    {
+        return output.Contains("--cookies-from-browser", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("authentication is required", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("login required", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("Sign in to confirm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCookieReadFailure(string output)
+    {
+        return output.Contains("cookie", StringComparison.OrdinalIgnoreCase) &&
+               (output.Contains("could not", StringComparison.OrdinalIgnoreCase) ||
+                output.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                output.Contains("not find", StringComparison.OrdinalIgnoreCase) ||
+                output.Contains("DPAPI", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string CreateAuthenticationMessage(CookieBrowser? browser)
+    {
+        var source = browser.HasValue
+            ? $"{browser.Value} tarayıcısının çerezleriyle de"
+            : "Tarayıcı çerezleriyle de";
+        return $"Bu içerik için oturum açmak gerekiyor. {source} giriş doğrulanamadı. " +
+               "Siteye tarayıcınızda giriş yapın, Ayarlar > Tarayıcı çerezleri bölümünden o tarayıcıyı seçin " +
+               "ve tarayıcıyı kapatıp tekrar deneyin. (Chrome/Edge çerezleri okunamazsa Firefox önerilir.)";
     }
 
     private static bool IsHttpUrl(string value)
